@@ -1,0 +1,320 @@
+// Prisma schema for the Drata Compliance Tracker.
+// SQLite is the storage engine; this app is meant to run as a single
+// self-hosted instance (see Dockerfile), not a multi-tenant service.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ---------------------------------------------------------------------------
+// Drata synced data (read-only mirrors of what Drata reports; re-synced on
+// every check run). `drataId` is the id/code from Drata's API.
+// ---------------------------------------------------------------------------
+
+model Workspace {
+  id           String   @id @default(cuid())
+  drataId      String   @unique
+  name         String
+  isPrimary    Boolean  @default(false)
+  lastSyncedAt DateTime?
+
+  controls  Control[]
+  tests     MonitoringTest[]
+  evidence  Evidence[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Control {
+  id              String   @id @default(cuid())
+  drataId         String   @unique
+  workspaceId     String
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  code            String
+  name            String
+  description     String?
+  isReady         Boolean  @default(false)
+  hasPolicy       Boolean  @default(false)
+  hasPassingTest  Boolean  @default(false)
+  hasEvidence     Boolean  @default(false)
+  isMonitored     Boolean  @default(false)
+  ownersJson      String?  // JSON array of { id, name, email }
+  frameworkTagsJson String? // JSON array of framework codes, e.g. ["SOC_2", "HIPAA"]
+  rawJson         String?  // full raw payload from Drata, for fields we don't model explicitly
+
+  testLinks       ControlTest[]
+  evidenceLinks   ControlEvidence[]
+  tagAssignments  TagAssignment[]
+  snapshots       StatusSnapshot[]
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([workspaceId])
+  @@index([code])
+}
+
+model MonitoringTest {
+  id                 String   @id @default(cuid())
+  drataId            String   @unique // monitoring test instance id (unique per workspace)
+  testTemplateId     String   // Drata's `testId` - identifies the test type
+  workspaceId        String
+  workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  name               String
+  checkResultStatus  String?  // e.g. PASS / FAIL / ERROR (as reported by Drata)
+  checkStatus        String?  // system status, e.g. ACTIVE / DISABLED
+  source             String?  // DRATA | CUSTOM | ...
+  provider           String?  // best-effort cloud/service provider (AWS, Azure, GCP, ...), inferred from the test name
+  lastCheckedAt      DateTime?
+  rawJson            String?
+
+  controlLinks       ControlTest[]
+  tagAssignments     TagAssignment[]
+  snapshots          StatusSnapshot[]
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([workspaceId])
+  @@index([provider])
+}
+
+model ControlTest {
+  controlId String
+  testId    String
+  control   Control        @relation(fields: [controlId], references: [id], onDelete: Cascade)
+  test      MonitoringTest @relation(fields: [testId], references: [id], onDelete: Cascade)
+
+  @@id([controlId, testId])
+  @@index([testId])
+}
+
+// Policies are account-level in Drata's API (not nested under a workspace),
+// and a control's "hasPolicy" flag doesn't come with a resolvable policy id,
+// so this table is synced for its own listing/reporting value rather than
+// joined to Control rows.
+model Policy {
+  id             String   @id @default(cuid())
+  drataId        String   @unique
+
+  name           String
+  status         String?   // e.g. ACTIVE, ARCHIVED
+  approvedAt     DateTime?
+  publishedAt    DateTime?
+  renewalDate    DateTime?
+  currentVersion String?
+  rawJson        String?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model Evidence {
+  id           String   @id @default(cuid())
+  drataId      String   @unique
+  workspaceId  String
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  name         String
+  status       String   // NEEDS_ARTIFACT | ERROR | READY | EXPIRING_SOON | EXPIRED | NEEDS_SOURCE | NEEDS_ATTENTION
+  renewalDate  DateTime?
+  rawJson      String?
+
+  controlLinks ControlEvidence[]
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([workspaceId])
+}
+
+model ControlEvidence {
+  controlId  String
+  evidenceId String
+  control    Control  @relation(fields: [controlId], references: [id], onDelete: Cascade)
+  evidence   Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+
+  @@id([controlId, evidenceId])
+  @@index([evidenceId])
+}
+
+// ---------------------------------------------------------------------------
+// Tagging layer - this is the part Drata doesn't have.
+// ---------------------------------------------------------------------------
+
+enum TaggableType {
+  CONTROL
+  TEST
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  color     String   @default("#6366f1")
+
+  assignments TagAssignment[]
+  rules       NotificationRule[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TagAssignment {
+  id           String       @id @default(cuid())
+  tagId        String
+  tag          Tag          @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  entityType   TaggableType
+  controlId    String?
+  testId       String?
+  control      Control?        @relation(fields: [controlId], references: [id], onDelete: Cascade)
+  test         MonitoringTest? @relation(fields: [testId], references: [id], onDelete: Cascade)
+
+  createdAt    DateTime @default(now())
+
+  @@unique([tagId, controlId])
+  @@unique([tagId, testId])
+  @@index([entityType])
+}
+
+// ---------------------------------------------------------------------------
+// History - one row per entity per check run, so trends can be charted.
+// ---------------------------------------------------------------------------
+
+enum SnapshotStatus {
+  PASS
+  FAIL
+}
+
+model StatusSnapshot {
+  id          String         @id @default(cuid())
+  entityType  TaggableType
+  controlId   String?
+  testId      String?
+  control     Control?        @relation(fields: [controlId], references: [id], onDelete: Cascade)
+  test        MonitoringTest? @relation(fields: [testId], references: [id], onDelete: Cascade)
+
+  workspaceId String
+  status      SnapshotStatus
+  reasonCode  String?  // e.g. POLICY_NOT_APPROVED | TEST_FAILED | EVIDENCE_EXPIRED
+  reasonDetail String?
+  checkRunId  String
+  checkRun    CheckRun @relation(fields: [checkRunId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+
+  @@index([controlId, createdAt])
+  @@index([testId, createdAt])
+  @@index([workspaceId, createdAt])
+}
+
+model CheckRun {
+  id          String   @id @default(cuid())
+  startedAt   DateTime @default(now())
+  finishedAt  DateTime?
+  status      String   @default("RUNNING") // RUNNING | SUCCEEDED | FAILED
+  errorMessage String?
+  trigger     String   @default("MANUAL") // MANUAL | SCHEDULED
+
+  snapshots   StatusSnapshot[]
+  notifications NotificationLog[]
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+enum ChannelType {
+  SLACK
+  JIRA
+  LINEAR
+}
+
+// A named set of credentials for one external service. Lets the same kind of
+// channel (e.g. Linear) be configured more than once - a parent company and
+// a subsidiary each with their own Linear workspace, both feeding one GRC
+// tool - with rules choosing which named connection to use.
+model Connection {
+  id              String      @id @default(cuid())
+  name            String      @unique // user-given label, e.g. "Linear - Main Co"
+  channelType     ChannelType
+  credentialsJson String      // channel-specific secrets: {token} | {baseUrl,email,apiToken} | {apiKey}
+
+  rules           NotificationRule[]
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model NotificationRule {
+  id           String      @id @default(cuid())
+  name         String
+  enabled      Boolean     @default(true)
+
+  tagId        String?     // null = applies to all tags
+  tag          Tag?        @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  workspaceId  String?     // null = all workspaces
+
+  entityType   TaggableType? // null = both controls and tests
+  provider     String?       // null = any provider; only meaningful when entityType is TEST
+  connectionId String
+  connection   Connection  @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  configJson   String      // destination within that connection (Slack channel, Jira project/fields, Linear team/project) + optional templates
+
+  logs         NotificationLog[]
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+enum NotificationState {
+  OPEN
+  RESOLVED
+}
+
+model NotificationLog {
+  id           String   @id @default(cuid())
+  ruleId       String
+  rule         NotificationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  entityType   TaggableType
+  controlId    String?
+  testId       String?
+
+  state        NotificationState @default(OPEN)
+  externalRef  String?  // e.g. Jira issue key, Slack message ts
+  lastNotifiedAt DateTime @default(now())
+  checkRunId   String?
+  checkRun     CheckRun? @relation(fields: [checkRunId], references: [id], onDelete: SetNull)
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([ruleId, controlId])
+  @@unique([ruleId, testId])
+}
+
+// ---------------------------------------------------------------------------
+// App settings - single row, id = "singleton".
+// ---------------------------------------------------------------------------
+
+model Settings {
+  id                String   @id @default("singleton")
+
+  drataApiKey       String?
+
+  scheduleEnabled   Boolean  @default(false)
+  scheduleHour      Int      @default(6)   // 0-23, local to scheduleTimezone
+  scheduleMinute    Int      @default(0)
+  scheduleTimezone  String   @default("UTC")
+
+  updatedAt         DateTime @updatedAt
+}

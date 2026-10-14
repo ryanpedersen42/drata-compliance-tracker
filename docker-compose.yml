@@ -1,0 +1,11 @@
+services:
+  compliance-tracker:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - compliance-tracker-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  compliance-tracker-data:
