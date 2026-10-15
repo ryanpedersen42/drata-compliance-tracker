@@ -15,6 +15,7 @@ export default function TestsPage() {
   const [status, setStatus] = useState("");
   const [provider, setProvider] = useState("");
   const [providers, setProviders] = useState<string[]>([]);
+  const [checkStatus, setCheckStatus] = useState("");
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -25,13 +26,14 @@ export default function TestsPage() {
     if (tagId) params.set("tagId", tagId);
     if (status) params.set("status", status);
     if (provider) params.set("provider", provider);
+    if (checkStatus) params.set("checkStatus", checkStatus);
     if (q) params.set("q", q);
 
     const res = await fetch(`/api/tests?${params}`);
     const json = await res.json();
     setTests(json.tests);
     setLoading(false);
-  }, [workspaceId, tagId, status, provider, q]);
+  }, [workspaceId, tagId, status, provider, checkStatus, q]);
 
   useEffect(() => {
     fetch("/api/workspaces").then((r) => r.json()).then(setWorkspaces);
@@ -71,6 +73,12 @@ export default function TestsPage() {
             <option key={p} value={p}>{p}</option>
           ))}
         </select>
+        <select value={checkStatus} onChange={(e) => setCheckStatus(e.target.value)} className="text-sm border border-neutral-300 rounded-md px-2 py-1.5">
+          <option value="">Enabled & disabled</option>
+          <option value="ENABLED">Enabled</option>
+          <option value="DISABLED">Disabled</option>
+          <option value="TESTING">Testing</option>
+        </select>
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search tests…" className="text-sm border border-neutral-300 rounded-md px-2 py-1.5 flex-1 min-w-[180px]" />
       </div>
 
@@ -81,6 +89,7 @@ export default function TestsPage() {
               <th className="text-left px-4 py-2 font-medium">Test</th>
               <th className="text-left px-4 py-2 font-medium">Workspace</th>
               <th className="text-left px-4 py-2 font-medium">Provider</th>
+              <th className="text-left px-4 py-2 font-medium">Enabled</th>
               <th className="text-left px-4 py-2 font-medium">Status</th>
               <th className="text-left px-4 py-2 font-medium">Controls</th>
               <th className="text-left px-4 py-2 font-medium">Tags</th>
@@ -88,16 +97,17 @@ export default function TestsPage() {
           </thead>
           <tbody>
             {loading && (
-              <tr><td colSpan={6} className="px-4 py-6 text-center text-neutral-400">Loading…</td></tr>
+              <tr><td colSpan={7} className="px-4 py-6 text-center text-neutral-400">Loading…</td></tr>
             )}
             {!loading && tests.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-6 text-center text-neutral-400">No tests synced yet.</td></tr>
+              <tr><td colSpan={7} className="px-4 py-6 text-center text-neutral-400">No tests synced yet.</td></tr>
             )}
             {tests.map((t) => (
               <tr key={t.id} className="border-t border-neutral-100">
                 <td className="px-4 py-2 font-medium">{t.name}</td>
                 <td className="px-4 py-2 text-neutral-600">{t.workspaceName}</td>
                 <td className="px-4 py-2 text-neutral-600 text-xs">{t.provider ?? "—"}</td>
+                <td className="px-4 py-2 text-neutral-600 text-xs">{t.checkStatus ?? "—"}</td>
                 <td className="px-4 py-2"><StatusBadge status={t.status} /></td>
                 <td className="px-4 py-2 text-neutral-600 text-xs">
                   {t.controls.map((c) => c.code).join(", ") || "—"}

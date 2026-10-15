@@ -9,12 +9,14 @@ export async function GET(request: Request) {
   const tagId = searchParams.get("tagId") || undefined;
   const status = searchParams.get("status") || undefined; // PASS | FAIL
   const provider = searchParams.get("provider") || undefined;
+  const checkStatus = searchParams.get("checkStatus") || undefined; // ENABLED | DISABLED | TESTING
   const q = searchParams.get("q")?.trim() || undefined;
 
   const where: Prisma.MonitoringTestWhereInput = {};
   if (workspaceId) where.workspaceId = workspaceId;
   if (tagId) where.tagAssignments = { some: { tagId } };
   if (provider) where.provider = provider;
+  if (checkStatus) where.checkStatus = checkStatus;
   if (q) where.name = { contains: q };
 
   const [tests, latestRun] = await Promise.all([
